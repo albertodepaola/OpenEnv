@@ -21,10 +21,15 @@ ARG BUILD_MODE=in-repo
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies including tkinter and Xvfb for headless UI support
 RUN apt-get update && apt-get install -y \
     git \
     curl \
+    python3-tk \
+    tk-dev \
+    tcl-dev \
+    xvfb \
+    x11-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy files based on build mode
@@ -50,6 +55,35 @@ RUN if [ "$BUILD_MODE" = "in-repo" ]; then \
 ENV BUILD_MODE=${BUILD_MODE}
 ENV PYTHONUNBUFFERED=1
 ENV ENABLE_WEB_INTERFACE=true
+ENV DISPLAY=:99
+
+# Create startup script that launches Xvfb before the application
+RUN printf '#!/bin/bash\n\
+set -e\n\
+\n\
+# Start Xvfb in the background\n\
+echo "Starting Xvfb virtual display on DISPLAY=:99..."\n\
+Xvfb :99 -screen 0 1024x768x24 -nolisten tcp -nolisten unix &\n\
+XVFB_PID=$!\n\
+\n\
+# Wait for Xvfb to be ready\n\
+echo "Waiting for Xvfb to be ready..."\n\
+for i in {1..10}; do\n\
+    if xdpyinfo -display :99 >/dev/null 2>&1; then\n\
+        echo "Xvfb is ready!"\n\
+        break\n\
+    fi\n\
+    if [ $i -eq 10 ]; then\n\
+        echo "ERROR: Xvfb failed to start"\n\
+        exit 1\n\
+    fi\n\
+    sleep 0.5\n\
+done\n\
+\n\
+# Execute the main command\n\
+exec "$@"\n\
+' > /usr/local/bin/start-with-display.sh && \
+    chmod +x /usr/local/bin/start-with-display.sh
 
 # Set PYTHONPATH based on build mode (evaluated at build time)
 RUN if [ "$BUILD_MODE" = "in-repo" ]; then \
@@ -63,11 +97,10 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# Run the server with correct module path based on build mode
-# In-repo: envs.coding_env.server.app:app (with PYTHONPATH=/app/src)
-# Standalone: coding_env.server.app:app (with package installed)
+# Run the server with Xvfb virtual display
+# The startup script launches Xvfb, then executes the uvicorn command
 CMD if [ "$BUILD_MODE" = "in-repo" ]; then \
-        export PYTHONPATH=/app/src && uvicorn envs.coding_env.server.app:app --host 0.0.0.0 --port 8000; \
+        /usr/local/bin/start-with-display.sh sh -c "export PYTHONPATH=/app/src && uvicorn envs.coding_env.server.app:app --host 0.0.0.0 --port 8000"; \
     else \
-        uvicorn coding_env.server.app:app --host 0.0.0.0 --port 8000; \
+        /usr/local/bin/start-with-display.sh uvicorn coding_env.server.app:app --host 0.0.0.0 --port 8000; \
     fi
