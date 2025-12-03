@@ -61,9 +61,11 @@ class PythonCodeActEnv(Environment):
 
     def __init__(
         self,
+        additional_imports: list[str] | None = None,
     ):
         self.transform = create_safe_coding_transform()
-        self._executor = PyExecutor()
+        self._additional_imports = additional_imports if additional_imports is not None else []
+        self._executor = PyExecutor(additional_imports=self._additional_imports)
         self._state = CodeState()
 
     def reset(self) -> Observation:
@@ -79,7 +81,7 @@ class PythonCodeActEnv(Environment):
         self._state.last_exit_code = 0
 
         # Reset executor to clear any previously defined variables/functions
-        self._executor = PyExecutor()
+        self._executor = PyExecutor(additional_imports=self._additional_imports)
 
         # Reset transform to clear any accumulated state
         self.transform = create_safe_coding_transform()

@@ -39,8 +39,15 @@ except ImportError:
     from envs.coding_env.models import CodeAction, CodeObservation
     from envs.coding_env.server.python_codeact_env import PythonCodeActEnv
 
-# Create the environment instance
-env = PythonCodeActEnv()
+# Create the environment instance with additional authorized imports
+# Add tkinter for UI/canvas examples
+# Note: To add more libraries (numpy, pandas, matplotlib, PIL),
+# you need to install them in the Dockerfile first
+env = PythonCodeActEnv(
+    additional_imports=[
+        "tkinter",
+    ]
+)
 
 # Create the app with web interface and README integration
 app = create_app(env, CodeAction, CodeObservation, env_name="coding_env")
