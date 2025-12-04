@@ -118,8 +118,77 @@ print('Elements: 1 blue rectangle, 1 red circle, 1 green line, 1 text label')
             #     error_msg += "..."
             print(f"      → stderr: {error_msg}")
 
+        # Test screenshot capture
+        print("\n4. Test screenshot capture (NEW: captures DURING execution):")
+        print("   The screenshot is now captured while UI elements are still alive,")
+        print("   with automatic rendering timeout to ensure proper display.")
+
+        result = client.step(CodeAction(code=tkinter_code, capture_screenshot=True))
+        print("   Code: Tkinter canvas with shapes (with screenshot)")
+        print(f"      → stdout: {result.observation.stdout.strip()}")
+        print(f"      → exit_code: {result.observation.exit_code}")
+
+        if result.observation.screenshot:
+            import base64
+
+            screenshot_bytes = base64.b64decode(result.observation.screenshot)
+            print(f"      → ✅ screenshot captured: {len(screenshot_bytes)} bytes PNG")
+            print(f"      → base64 length: {len(result.observation.screenshot)} chars")
+
+            # Optionally save to file for inspection
+            screenshot_path = Path(__file__).parent / "screenshot_test.png"
+            screenshot_path.write_bytes(screenshot_bytes)
+            print(f"      → saved to: {screenshot_path}")
+            print(
+                "      → Screenshot should show blue rectangle, red circle, green line, and text!"
+            )
+        else:
+            print("      → ❌ screenshot: None (capture failed - check Xvfb)")
+
+        # Test advanced screenshot with matplotlib
+        print("\n5. Test matplotlib screenshot:")
+
+        matplotlib_code = """import matplotlib
+matplotlib.use('TkAgg')  # Use Tk backend for Xvfb
+import matplotlib.pyplot as plt
+import numpy as np
+
+# Create a simple plot
+x = np.linspace(0, 2 * np.pi, 100)
+y = np.sin(x)
+
+plt.figure(figsize=(8, 6))
+plt.plot(x, y, 'b-', linewidth=2, label='sin(x)')
+plt.plot(x, np.cos(x), 'r--', linewidth=2, label='cos(x)')
+plt.title('Sine and Cosine Waves', fontsize=16)
+plt.xlabel('x (radians)')
+plt.ylabel('y')
+plt.legend()
+plt.grid(True, alpha=0.3)
+
+print('Plot created successfully')
+"""
+
+        result = client.step(CodeAction(code=matplotlib_code, capture_screenshot=True))
+        print("   Code: Matplotlib sine/cosine plot")
+        print(f"      → stdout: {result.observation.stdout.strip()}")
+        print(f"      → exit_code: {result.observation.exit_code}")
+
+        if result.observation.screenshot:
+            import base64
+
+            screenshot_bytes = base64.b64decode(result.observation.screenshot)
+            print(f"      → ✅ screenshot captured: {len(screenshot_bytes)} bytes PNG")
+
+            # Save matplotlib screenshot
+            screenshot_path = Path(__file__).parent / "matplotlib_plot.png"
+            screenshot_path.write_bytes(screenshot_bytes)
+            print(f"      → saved to: {screenshot_path}")
+        else:
+            print("      → ❌ screenshot: None (capture may have failed)")
+
         # Test error scenarios
-        print("\n4. Test error scenarios:")
+        print("\n6. Test error scenarios:")
 
         error_samples = [
             ("Division by zero", "x = 1 / 0\nprint('Should not reach here')"),
@@ -142,7 +211,7 @@ print('Elements: 1 blue rectangle, 1 red circle, 1 green line, 1 text label')
                 print(f"      → stderr: {error_msg}")
 
         # Check final state
-        print("\n5. Check final state:")
+        print("\n7. Check final state:")
         state = client.state()
         print(f"   episode_id: {state.episode_id}")
         print(f"   step_count: {state.step_count}")

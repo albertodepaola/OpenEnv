@@ -30,6 +30,7 @@ RUN apt-get update && apt-get install -y \
     tcl-dev \
     xvfb \
     x11-utils \
+    imagemagick \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy files based on build mode
@@ -45,7 +46,10 @@ RUN if [ "$BUILD_MODE" = "in-repo" ]; then \
             'pydantic>=2.0.0' \
             'uvicorn[standard]>=0.24.0' \
             'requests>=2.25.0' \
-            'smolagents>=1.22.0,<2'; \
+            'smolagents>=1.22.0,<2' \
+            'pillow>=10.0.0' \
+            'matplotlib>=3.5.0' \
+            'numpy>=1.21.0'; \
     else \
         # Standalone: install from pyproject.toml (includes openenv-core from PyPI) \
         pip install --no-cache-dir -e .; \
@@ -57,33 +61,9 @@ ENV PYTHONUNBUFFERED=1
 ENV ENABLE_WEB_INTERFACE=true
 ENV DISPLAY=:99
 
-# Create startup script that launches Xvfb before the application
-RUN printf '#!/bin/bash\n\
-set -e\n\
-\n\
-# Start Xvfb in the background\n\
-echo "Starting Xvfb virtual display on DISPLAY=:99..."\n\
-Xvfb :99 -screen 0 1024x768x24 -nolisten tcp -nolisten unix &\n\
-XVFB_PID=$!\n\
-\n\
-# Wait for Xvfb to be ready\n\
-echo "Waiting for Xvfb to be ready..."\n\
-for i in {1..10}; do\n\
-    if xdpyinfo -display :99 >/dev/null 2>&1; then\n\
-        echo "Xvfb is ready!"\n\
-        break\n\
-    fi\n\
-    if [ $i -eq 10 ]; then\n\
-        echo "ERROR: Xvfb failed to start"\n\
-        exit 1\n\
-    fi\n\
-    sleep 0.5\n\
-done\n\
-\n\
-# Execute the main command\n\
-exec "$@"\n\
-' > /usr/local/bin/start-with-display.sh && \
-    chmod +x /usr/local/bin/start-with-display.sh
+# Copy and install entrypoint script with dynamic package installation support
+COPY src/envs/coding_env/server/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
 
 # Set PYTHONPATH based on build mode (evaluated at build time)
 RUN if [ "$BUILD_MODE" = "in-repo" ]; then \
@@ -97,10 +77,13 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# Run the server with Xvfb virtual display
-# The startup script launches Xvfb, then executes the uvicorn command
+# Run the server with dynamic package installation and Xvfb virtual display
+# The entrypoint script handles:
+# 1. Installing packages from ADDITIONAL_IMPORTS (filtering out stdlib)
+# 2. Starting Xvfb virtual display
+# 3. Launching uvicorn
 CMD if [ "$BUILD_MODE" = "in-repo" ]; then \
-        /usr/local/bin/start-with-display.sh sh -c "export PYTHONPATH=/app/src && uvicorn envs.coding_env.server.app:app --host 0.0.0.0 --port 8000"; \
+        /usr/local/bin/entrypoint.sh sh -c "export PYTHONPATH=/app/src && uvicorn envs.coding_env.server.app:app --host 0.0.0.0 --port 8000"; \
     else \
-        /usr/local/bin/start-with-display.sh uvicorn coding_env.server.app:app --host 0.0.0.0 --port 8000; \
+        /usr/local/bin/entrypoint.sh uvicorn coding_env.server.app:app --host 0.0.0.0 --port 8000; \
     fi

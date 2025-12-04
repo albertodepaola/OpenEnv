@@ -64,7 +64,9 @@ class PythonCodeActEnv(Environment):
         additional_imports: list[str] | None = None,
     ):
         self.transform = create_safe_coding_transform()
-        self._additional_imports = additional_imports if additional_imports is not None else []
+        self._additional_imports = (
+            additional_imports if additional_imports is not None else []
+        )
         self._executor = PyExecutor(additional_imports=self._additional_imports)
         self._state = CodeState()
 
@@ -103,7 +105,7 @@ class PythonCodeActEnv(Environment):
             action: CodeAction containing the code to execute
 
         Returns:
-            CodeObservation with execution results (stdout, stderr, exit_code)
+            CodeObservation with execution results (stdout, stderr, exit_code, screenshot)
 
         Raises:
             ValueError: If action is not a CodeAction instance
@@ -112,11 +114,26 @@ class PythonCodeActEnv(Environment):
             raise ValueError(f"Expected CodeAction, got {type(action)}")
 
         # Execute the code using PyExecutor
-        result = self._executor.run(action.code)
+        # Pass the capture_screenshot flag to enable in-execution screenshot capture
+        result = self._executor.run(
+            action.code, capture_screenshot=action.capture_screenshot
+        )
 
         # Update state
         self._state.step_count += 1
         self._state.last_exit_code = result.exit_code
+
+        # Retrieve screenshot captured during execution (if any)
+        screenshot = None
+        if action.capture_screenshot:
+            screenshot = self._executor.get_captured_screenshot()
+            if screenshot is None:
+                import logging
+
+                logging.warning(
+                    "Screenshot capture was requested but no screenshot was captured. "
+                    "This may occur if UI elements were not rendered or Xvfb is not running."
+                )
 
         # Create observation from execution result
         observation = CodeObservation(
@@ -124,6 +141,7 @@ class PythonCodeActEnv(Environment):
             stderr=result.stderr,
             exit_code=result.exit_code,
             metadata={"last_code": action.code},  # Add code to metadata for transforms
+            screenshot=screenshot,
         )
 
         return self._apply_transform(observation)

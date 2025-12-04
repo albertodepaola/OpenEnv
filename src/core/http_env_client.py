@@ -46,6 +46,7 @@ class HTTPEnvClient(ABC, Generic[ActT, ObsT]):
         cls: Type[EnvClientT],
         image: str,
         provider: Optional["ContainerProvider"] = None,
+        timeout_s: float = 30.0,
         **kwargs: Any,
     ) -> EnvClientT:
         """
@@ -100,7 +101,7 @@ class HTTPEnvClient(ABC, Generic[ActT, ObsT]):
         base_url = provider.start_container(image, **kwargs)
 
         # 2. Wait for server to be ready
-        provider.wait_for_ready(base_url)
+        provider.wait_for_ready(base_url, timeout_s=timeout_s)
 
         # 3. Create and return client instance with provider reference
         return cls(base_url=base_url, provider=provider)
