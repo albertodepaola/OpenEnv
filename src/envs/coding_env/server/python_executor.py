@@ -408,7 +408,8 @@ class PyExecutor(ExecutorBackend):
         """Inject screenshot capture code at the end of user's code.
 
         This ensures the screenshot is captured DURING execution, while
-        UI elements are still alive, with a timeout to allow rendering.
+        UI elements are still alive. Note: The user code is responsible
+        for proper rendering (e.g., calling root.update() for tkinter).
 
         Args:
             code: Original user code
@@ -419,33 +420,8 @@ class PyExecutor(ExecutorBackend):
         """
         injection = f"""
 # === Auto-injected screenshot capture code ===
-print("[DEBUG] Screenshot capture: Starting auto-injected code")
+print("[DEBUG] Screenshot capture: Starting capture")
 import time
-
-# Try to force UI updates for common GUI libraries
-print("[DEBUG] Screenshot capture: Attempting to update tkinter windows")
-try:
-    # Attempt to update tkinter windows if they exist
-    import tkinter as tk
-    if tk._default_root:
-        print(f"[DEBUG] Screenshot capture: Found tkinter root window")
-        tk._default_root.update_idletasks()
-        tk._default_root.update()
-        print("[DEBUG] Screenshot capture: Tkinter windows updated")
-    else:
-        print("[DEBUG] Screenshot capture: No tkinter root window found")
-except Exception as e:
-    print(f"[DEBUG] Screenshot capture: Tkinter update failed or not available: {{e}}")
-
-print("[DEBUG] Screenshot capture: Attempting to update matplotlib figures")
-try:
-    # Attempt to update matplotlib figures if they exist
-    # import matplotlib.pyplot as plt
-    # plt.draw()
-    # plt.pause(0.001)
-    print("[DEBUG] Screenshot capture: Matplotlib figures updated")
-except Exception as e:
-    print(f"[DEBUG] Screenshot capture: Matplotlib update failed or not available: {{e}}")
 
 # Wait for rendering to complete
 print(f"[DEBUG] Screenshot capture: Waiting {render_timeout}s for rendering")

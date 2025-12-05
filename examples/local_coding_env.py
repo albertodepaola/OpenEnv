@@ -102,6 +102,11 @@ print('Canvas created with rectangle, circle, line, and text')
 print('Window size: 400x300')
 print('Elements: 1 blue rectangle, 1 red circle, 1 green line, 1 text label')
 
+# CRITICAL: Update the window to render it to the display
+# Without these calls, the tkinter window won't be rendered and screenshots will be black
+root.update_idletasks()
+root.update()
+
 # Note: In a headless environment, mainloop() would block forever
 # So we just print success and exit instead
 # root.mainloop()

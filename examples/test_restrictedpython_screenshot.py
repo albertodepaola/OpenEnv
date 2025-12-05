@@ -57,7 +57,11 @@ label.pack(pady=50)
 button = tk.Button(root, text="Click Me!", bg="blue", fg="white", font=("Arial", 14))
 button.pack(pady=20)
 
-print("Tkinter window created successfully")
+# CRITICAL: Update the window to render it to the display
+root.update_idletasks()
+root.update()
+
+print("Tkinter window created and rendered successfully")
 """
 
         result = env.step(CodeAction(code=code, capture_screenshot=True))

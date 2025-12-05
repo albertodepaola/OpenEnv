@@ -365,7 +365,8 @@ class RestrictedPythonExecutor(ExecutorBackend):
         """Inject screenshot capture code at the end of user's code.
 
         This ensures the screenshot is captured DURING execution, while
-        UI elements are still alive, with a timeout to allow rendering.
+        UI elements are still alive. Note: The user code is responsible
+        for proper rendering (e.g., calling root.update() for tkinter).
 
         Args:
             code: Original user code
