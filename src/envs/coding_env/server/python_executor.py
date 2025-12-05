@@ -35,11 +35,16 @@ except ImportError:
     # In-repo imports (when running from OpenEnv repository)
     from core.env_server.types import CodeExecResult
 
+try:
+    from coding_env.server.executor_backend import ExecutorBackend
+except ImportError:
+    from envs.coding_env.server.executor_backend import ExecutorBackend
+
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
 
-class PyExecutor:
+class PyExecutor(ExecutorBackend):
     """Wrapper around smolagents LocalPythonExecutor.
 
     The wrapper registers a few non-privileged helper tools to the

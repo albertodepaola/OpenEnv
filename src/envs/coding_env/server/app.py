@@ -51,18 +51,29 @@ additional_imports = []
 
 if additional_imports_env:
     # Parse comma-separated list and strip whitespace
-    additional_imports = [imp.strip() for imp in additional_imports_env.split(",") if imp.strip()]
-    print(f"[app.py] Loading with additional imports from ADDITIONAL_IMPORTS: {additional_imports}")
+    additional_imports = [
+        imp.strip() for imp in additional_imports_env.split(",") if imp.strip()
+    ]
+    print(
+        f"[app.py] Loading with additional imports from ADDITIONAL_IMPORTS: {additional_imports}"
+    )
 
 # Always include tkinter for UI/canvas examples
 if "tkinter" not in additional_imports:
     additional_imports.append("tkinter")
 
+# Get executor backend from environment variable (default: smolagents)
+# Options: "smolagents" or "restrictedpython"
+executor_backend = os.environ.get("EXECUTOR_BACKEND", "smolagents")
+print(f"[app.py] Using executor backend: {executor_backend}")
+
 print(f"[app.py] Creating environment with authorized imports: {additional_imports}")
 
-# Create the environment instance with additional authorized imports
+# Create the environment instance with additional authorized imports and backend selection
 # Note: To use these libraries, they must be installed in the Docker image first
-env = PythonCodeActEnv(additional_imports=additional_imports)
+env = PythonCodeActEnv(
+    additional_imports=additional_imports, executor_backend=executor_backend
+)
 
 # Create the app with web interface and README integration
 app = create_app(env, CodeAction, CodeObservation, env_name="coding_env")

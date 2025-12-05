@@ -26,13 +26,19 @@ try:
     from coding_env.models import CodeAction, CodeObservation, CodeState
 
     # Standalone mode
+    from coding_env.server.executor_backend import ExecutorBackend
     from coding_env.server.python_executor import PyExecutor
+    from coding_env.server.restricted_python_executor import RestrictedPythonExecutor
     from coding_env.server.transforms import create_safe_coding_transform
 except ImportError:
     from envs.coding_env.models import CodeAction, CodeObservation, CodeState
 
     # In-repo mode
+    from envs.coding_env.server.executor_backend import ExecutorBackend
     from envs.coding_env.server.python_executor import PyExecutor
+    from envs.coding_env.server.restricted_python_executor import (
+        RestrictedPythonExecutor,
+    )
     from envs.coding_env.server.transforms import create_safe_coding_transform
 
 
@@ -48,6 +54,9 @@ class PythonCodeActEnv(Environment):
         transform: Optional transform to apply to observations
         additional_imports: List of additional module imports to authorize
                           (e.g., ["numpy", "pandas", "matplotlib"])
+        executor_backend: Backend to use for code execution. Options:
+                         - "smolagents" (default): Use smolagents LocalPythonExecutor
+                         - "restrictedpython": Use RestrictedPython for full Python semantics
 
     Example:
         >>> env = PythonCodeActEnv()
@@ -62,13 +71,37 @@ class PythonCodeActEnv(Environment):
     def __init__(
         self,
         additional_imports: list[str] | None = None,
+        executor_backend: str = "smolagents",
     ):
         self.transform = create_safe_coding_transform()
         self._additional_imports = (
             additional_imports if additional_imports is not None else []
         )
-        self._executor = PyExecutor(additional_imports=self._additional_imports)
+        self._backend_name = executor_backend
+        self._executor = self._create_executor(executor_backend)
         self._state = CodeState()
+
+    def _create_executor(self, backend: str) -> ExecutorBackend:
+        """Create the appropriate executor backend based on configuration.
+
+        Args:
+            backend: Name of the backend ("smolagents" or "restrictedpython")
+
+        Returns:
+            ExecutorBackend instance
+
+        Raises:
+            ValueError: If backend name is not recognized
+        """
+        if backend == "smolagents":
+            return PyExecutor(additional_imports=self._additional_imports)
+        elif backend == "restrictedpython":
+            return RestrictedPythonExecutor(additional_imports=self._additional_imports)
+        else:
+            raise ValueError(
+                f"Unknown executor backend: {backend}. "
+                f"Valid options: 'smolagents', 'restrictedpython'"
+            )
 
     def reset(self) -> Observation:
         """
@@ -83,7 +116,7 @@ class PythonCodeActEnv(Environment):
         self._state.last_exit_code = 0
 
         # Reset executor to clear any previously defined variables/functions
-        self._executor = PyExecutor(additional_imports=self._additional_imports)
+        self._executor = self._create_executor(self._backend_name)
 
         # Reset transform to clear any accumulated state
         self.transform = create_safe_coding_transform()

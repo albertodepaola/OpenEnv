@@ -19,13 +19,13 @@ from typing import Any, List, Optional, Type
 try:
     # Standalone imports (when installed from pip)
     from openenv_core.client_types import StepResult
-    from openenv_core.http_env_client import HTTPEnvClient
     from openenv_core.containers.runtime import ContainerProvider
+    from openenv_core.http_env_client import HTTPEnvClient
 except ImportError:
     # In-repo imports (when running from OpenEnv repository)
     from core.client_types import StepResult
-    from core.http_env_client import HTTPEnvClient
     from core.containers.runtime import ContainerProvider
+    from core.http_env_client import HTTPEnvClient
 
 # Use relative imports for sibling modules - works in both modes
 from .models import CodeAction, CodeObservation, CodeState
@@ -72,6 +72,7 @@ class CodingEnv(HTTPEnvClient[CodeAction, CodeObservation]):
         image: str,
         provider: Optional[ContainerProvider] = None,
         additional_imports: Optional[List[str]] = None,
+        executor_backend: str = "smolagents",
         timeout_s: float = 30.0,
         **kwargs: Any,
     ) -> "CodingEnv":
@@ -79,57 +80,67 @@ class CodingEnv(HTTPEnvClient[CodeAction, CodeObservation]):
         Create a CodingEnv client by spinning up a Docker container.
 
         This method extends the base HTTPEnvClient.from_docker_image() with
-        CodingEnv-specific configuration for authorizing additional Python imports.
+        CodingEnv-specific configuration for authorizing additional Python imports
+        and selecting the executor backend.
 
         Args:
             image: Docker image name (e.g., "coding-env:latest")
             provider: Container provider to use (defaults to LocalDockerProvider)
-            additional_imports: List of additional Python modules to authorize in smolagents.
+            additional_imports: List of additional Python modules to authorize in executor.
                               Both stdlib and PyPI packages can be specified.
                               - Stdlib modules (e.g., "dataclasses", "typing") are always available
                               - PyPI packages (e.g., "numpy", "scipy") are installed dynamically
                                 at container startup via pip install
+            executor_backend: Backend to use for code execution.
+                            Options: "smolagents" (default), "restrictedpython"
+                            - smolagents: Fast but doesn't support decorators
+                            - restrictedpython: Full Python semantics with @dataclass support
+            timeout_s: Timeout for container startup (default 30s, use 120s+ for packages)
             **kwargs: Additional arguments passed to provider.start_container()
 
         Returns:
             CodingEnv client connected to the running container
 
         Example:
-            >>> # Basic usage
+            >>> # Basic usage with smolagents (default)
             >>> env = CodingEnv.from_docker_image("coding-env:latest")
             >>>
-            >>> # With additional imports (both stdlib and PyPI packages)
+            >>> # With RestrictedPython backend for @dataclass support
             >>> env = CodingEnv.from_docker_image(
             ...     "coding-env:latest",
-            ...     additional_imports=[
-            ...         "numpy",        # PyPI - installed dynamically
-            ...         "scipy",        # PyPI - installed dynamically
-            ...         "dataclasses",  # stdlib - always available (no install needed)
-            ...         "typing",       # stdlib - always available (no install needed)
-            ...     ]
+            ...     executor_backend="restrictedpython",
+            ...     additional_imports=["dataclasses", "numpy"],
             ... )
             >>>
-            >>> # Use numpy in code
+            >>> # Now @dataclass works!
             >>> result = env.step(CodeAction(code='''
-            ... import numpy as np
-            ... arr = np.array([1, 2, 3, 4, 5])
-            ... print(f"Mean: {np.mean(arr)}")
+            ... from dataclasses import dataclass
+            ...
+            ... @dataclass
+            ... class Point:
+            ...     x: int
+            ...     y: int
+            ...
+            ... p = Point(3, 4)
+            ... print(f"Point: {p}")
             ... '''))
 
         Note:
             PyPI packages are installed at container startup, which adds 5-30 seconds
             depending on package size. Stdlib modules are filtered out and not installed.
         """
+        # Get existing env_vars or create new dict
+        env_vars = kwargs.get("env_vars", {})
+
         # Convert additional_imports list to ADDITIONAL_IMPORTS env var
         if additional_imports:
-            # Get existing env_vars or create new dict
-            env_vars = kwargs.get("env_vars", {})
-
-            # Convert list to comma-separated string
             env_vars["ADDITIONAL_IMPORTS"] = ",".join(additional_imports)
 
-            # Update kwargs with the env_vars
-            kwargs["env_vars"] = env_vars
+        # Set executor backend
+        env_vars["EXECUTOR_BACKEND"] = executor_backend
+
+        # Update kwargs with the env_vars
+        kwargs["env_vars"] = env_vars
 
         # Call parent class method with updated kwargs
         return super().from_docker_image(image, provider, timeout_s=timeout_s, **kwargs)

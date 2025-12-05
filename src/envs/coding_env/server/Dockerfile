@@ -49,7 +49,8 @@ RUN if [ "$BUILD_MODE" = "in-repo" ]; then \
             'smolagents>=1.22.0,<2' \
             'pillow>=10.0.0' \
             'matplotlib>=3.5.0' \
-            'numpy>=1.21.0'; \
+            'numpy>=1.21.0' \
+            'RestrictedPython>=6.0'; \
     else \
         # Standalone: install from pyproject.toml (includes openenv-core from PyPI) \
         pip install --no-cache-dir -e .; \
