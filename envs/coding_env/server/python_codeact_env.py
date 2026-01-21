@@ -8,15 +8,17 @@
 Python Code Action Environment.
 
 This module provides a server-side environment implementation for executing
-Python code actions using PyExecutor.
+Python code actions using PyExecutor or RestrictedPythonExecutor.
 """
 
 import uuid
 
 from openenv.core.env_server.interfaces import Action, Environment, Observation
-from .python_executor import PyExecutor
 
 from ..models import CodeAction, CodeObservation, CodeState
+from .executor_backend import ExecutorBackend
+from .python_executor import PyExecutor
+from .restricted_python_executor import RestrictedPythonExecutor
 from .transforms import create_safe_coding_transform
 
 
@@ -32,6 +34,9 @@ class PythonCodeActEnv(Environment):
         transform: Optional transform to apply to observations
         additional_imports: List of additional module imports to authorize
                           (e.g., ["numpy", "pandas", "matplotlib"])
+        executor_backend: Backend to use for code execution. Options:
+                         - "smolagents" (default): Use smolagents LocalPythonExecutor
+                         - "restrictedpython": Use RestrictedPython for full Python semantics
 
     Example:
         >>> env = PythonCodeActEnv()
@@ -45,10 +50,38 @@ class PythonCodeActEnv(Environment):
 
     def __init__(
         self,
+        additional_imports: list[str] | None = None,
+        executor_backend: str = "smolagents",
     ):
         self.transform = create_safe_coding_transform()
-        self._executor = PyExecutor()
+        self._additional_imports = (
+            additional_imports if additional_imports is not None else []
+        )
+        self._backend_name = executor_backend
+        self._executor = self._create_executor(executor_backend)
         self._state = CodeState()
+
+    def _create_executor(self, backend: str) -> ExecutorBackend:
+        """Create the appropriate executor backend based on configuration.
+
+        Args:
+            backend: Name of the backend ("smolagents" or "restrictedpython")
+
+        Returns:
+            ExecutorBackend instance
+
+        Raises:
+            ValueError: If backend name is not recognized
+        """
+        if backend == "smolagents":
+            return PyExecutor(additional_imports=self._additional_imports)
+        elif backend == "restrictedpython":
+            return RestrictedPythonExecutor(additional_imports=self._additional_imports)
+        else:
+            raise ValueError(
+                f"Unknown executor backend: {backend}. "
+                f"Valid options: 'smolagents', 'restrictedpython'"
+            )
 
     def reset(self) -> Observation:
         """
@@ -63,7 +96,7 @@ class PythonCodeActEnv(Environment):
         self._state.last_exit_code = 0
 
         # Reset executor to clear any previously defined variables/functions
-        self._executor = PyExecutor()
+        self._executor = self._create_executor(self._backend_name)
 
         # Reset transform to clear any accumulated state
         self.transform = create_safe_coding_transform()
@@ -85,7 +118,7 @@ class PythonCodeActEnv(Environment):
             action: CodeAction containing the code to execute
 
         Returns:
-            CodeObservation with execution results (stdout, stderr, exit_code)
+            CodeObservation with execution results (stdout, stderr, exit_code, screenshot)
 
         Raises:
             ValueError: If action is not a CodeAction instance
@@ -94,19 +127,34 @@ class PythonCodeActEnv(Environment):
             raise ValueError(f"Expected CodeAction, got {type(action)}")
 
         # Execute the code using PyExecutor
-        result = self._executor.run(action.code)
+        # Pass the capture_screenshot flag to enable in-execution screenshot capture
+        result = self._executor.run(
+            action.code, capture_screenshot=action.capture_screenshot
+        )
 
         # Update state
         self._state.step_count += 1
         self._state.last_exit_code = result.exit_code
 
+        # Retrieve screenshot captured during execution (if any)
+        screenshot = None
+        if action.capture_screenshot:
+            screenshot = self._executor.get_captured_screenshot()
+            if screenshot is None:
+                import logging
+
+                logging.warning(
+                    "Screenshot capture was requested but no screenshot was captured. "
+                    "This may occur if UI elements were not rendered or Xvfb is not running."
+                )
+
         # Create observation from execution result
-        # Include code in metadata for transform reward calculation
         observation = CodeObservation(
             stdout=result.stdout,
             stderr=result.stderr,
             exit_code=result.exit_code,
-            metadata={"last_code": action.code},
+            metadata={"last_code": action.code},  # Add code to metadata for transforms
+            screenshot=screenshot,
         )
 
         return self._apply_transform(observation)

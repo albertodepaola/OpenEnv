@@ -15,19 +15,25 @@ server, enabling efficient multi-step interactions with lower latency.
 
 from __future__ import annotations
 
+from typing import Any, List, Optional, Type, TYPE_CHECKING
+
 from openenv.core.client_types import StepResult
 from openenv.core.env_client import EnvClient
 
 from .models import CodeAction, CodeObservation, CodeState
 
+if TYPE_CHECKING:
+    from openenv.core.containers.runtime import ContainerProvider
+
 
 class CodingEnv(EnvClient[CodeAction, CodeObservation, CodeState]):
-    # --- HTTPEnvClient abstract hooks ---
+    # --- EnvClient abstract hooks ---
 
     def _step_payload(self, action: CodeAction) -> dict:
         # Shape expected by the server's /step endpoint under "action"
         return {
             "code": action.code,
+            "capture_screenshot": action.capture_screenshot,
         }
 
     def _parse_result(self, payload: dict) -> StepResult[CodeObservation]:
@@ -54,3 +60,80 @@ class CodingEnv(EnvClient[CodeAction, CodeObservation, CodeState]):
             step_count=payload.get("step_count", 0),
             last_exit_code=payload.get("last_exit_code", 0),
         )
+
+    @classmethod
+    def from_docker_image(
+        cls: Type["CodingEnv"],
+        image: str,
+        provider: Optional["ContainerProvider"] = None,
+        additional_imports: Optional[List[str]] = None,
+        executor_backend: str = "smolagents",
+        **kwargs: Any,
+    ) -> "CodingEnv":
+        """
+        Create a CodingEnv client by spinning up a Docker container.
+
+        This method extends the base EnvClient.from_docker_image() with
+        CodingEnv-specific configuration for authorizing additional Python imports
+        and selecting the executor backend.
+
+        Args:
+            image: Docker image name (e.g., "coding-env:latest")
+            provider: Container provider to use (defaults to LocalDockerProvider)
+            additional_imports: List of additional Python modules to authorize in executor.
+                              Both stdlib and PyPI packages can be specified.
+                              - Stdlib modules (e.g., "dataclasses", "typing") are always available
+                              - PyPI packages (e.g., "numpy", "scipy") are installed dynamically
+                                at container startup via pip install
+            executor_backend: Backend to use for code execution.
+                            Options: "smolagents" (default), "restrictedpython"
+                            - smolagents: Fast but doesn't support decorators
+                            - restrictedpython: Full Python semantics with @dataclass support
+            **kwargs: Additional arguments passed to provider.start_container()
+
+        Returns:
+            CodingEnv client connected to the running container
+
+        Example:
+            >>> # Basic usage with smolagents (default)
+            >>> env = CodingEnv.from_docker_image("coding-env:latest")
+            >>>
+            >>> # With RestrictedPython backend for @dataclass support
+            >>> env = CodingEnv.from_docker_image(
+            ...     "coding-env:latest",
+            ...     executor_backend="restrictedpython",
+            ...     additional_imports=["dataclasses", "numpy"],
+            ... )
+            >>>
+            >>> # Now @dataclass works!
+            >>> result = env.step(CodeAction(code='''
+            ... from dataclasses import dataclass
+            ...
+            ... @dataclass
+            ... class Point:
+            ...     x: int
+            ...     y: int
+            ...
+            ... p = Point(3, 4)
+            ... print(f"Point: {p}")
+            ... '''))
+
+        Note:
+            PyPI packages are installed at container startup, which adds 5-30 seconds
+            depending on package size. Stdlib modules are filtered out and not installed.
+        """
+        # Get existing env_vars or create new dict
+        env_vars = kwargs.get("env_vars", {})
+
+        # Convert additional_imports list to ADDITIONAL_IMPORTS env var
+        if additional_imports:
+            env_vars["ADDITIONAL_IMPORTS"] = ",".join(additional_imports)
+
+        # Set executor backend
+        env_vars["EXECUTOR_BACKEND"] = executor_backend
+
+        # Update kwargs with the env_vars
+        kwargs["env_vars"] = env_vars
+
+        # Call parent class method with updated kwargs
+        return super().from_docker_image(image, provider, **kwargs)
