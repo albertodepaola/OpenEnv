@@ -8,15 +8,17 @@
 Python Code Action Environment.
 
 This module provides a server-side environment implementation for executing
-Python code actions using PyExecutor.
+Python code actions using various executor backends.
 """
 
 import uuid
 
 from openenv.core.env_server.interfaces import Action, Environment, Observation
-from .python_executor import PyExecutor
 
 from ..models import CodeAction, CodeObservation, CodeState
+from .executor_backend import ExecutorBackend
+from .python_executor import PyExecutor
+from .subprocess_executor import SubprocessExecutor
 from .transforms import create_safe_coding_transform
 
 
@@ -32,6 +34,10 @@ class PythonCodeActEnv(Environment):
         transform: Optional transform to apply to observations
         additional_imports: List of additional module imports to authorize
                           (e.g., ["numpy", "pandas", "matplotlib"])
+        executor_backend: Backend to use for code execution. Options:
+                         - "subprocess" (default): Use subprocess isolation with resource limits
+                             (requires hardened container for security)
+                         - "smolagents": Use smolagents LocalPythonExecutor
 
     Example:
         >>> env = PythonCodeActEnv()
@@ -45,10 +51,41 @@ class PythonCodeActEnv(Environment):
 
     def __init__(
         self,
+        additional_imports: list[str] | None = None,
+        executor_backend: str = "subprocess",
     ):
         self.transform = create_safe_coding_transform()
-        self._executor = PyExecutor()
+        self._additional_imports = additional_imports or []
+        self._executor_backend = executor_backend
+        self._executor: ExecutorBackend = self._create_executor(executor_backend)
         self._state = CodeState()
+
+    def _create_executor(self, backend: str) -> ExecutorBackend:
+        """Create the appropriate executor backend based on configuration.
+
+        Args:
+            backend: Name of the backend. Options:
+                - "subprocess": Subprocess isolation with resource limits
+                    (requires hardened container for security)
+                - "smolagents": AST-based executor from smolagents library
+
+        Returns:
+            ExecutorBackend instance
+
+        Raises:
+            ValueError: If backend name is not recognized
+        """
+        if backend == "subprocess":
+            # Subprocess executor with resource limits
+            # Security relies on container hardening (--cap-drop=ALL, etc.)
+            return SubprocessExecutor()
+        elif backend == "smolagents":
+            return PyExecutor(additional_imports=self._additional_imports)
+        else:
+            raise ValueError(
+                f"Unknown executor backend: {backend}. "
+                f"Valid options: 'subprocess', 'smolagents'"
+            )
 
     def reset(self) -> Observation:
         """
@@ -63,7 +100,7 @@ class PythonCodeActEnv(Environment):
         self._state.last_exit_code = 0
 
         # Reset executor to clear any previously defined variables/functions
-        self._executor = PyExecutor()
+        self._executor = self._create_executor(self._executor_backend)
 
         # Reset transform to clear any accumulated state
         self.transform = create_safe_coding_transform()
@@ -85,7 +122,7 @@ class PythonCodeActEnv(Environment):
             action: CodeAction containing the code to execute
 
         Returns:
-            CodeObservation with execution results (stdout, stderr, exit_code)
+            CodeObservation with execution results (stdout, stderr, exit_code, screenshot, frames)
 
         Raises:
             ValueError: If action is not a CodeAction instance
@@ -93,12 +130,46 @@ class PythonCodeActEnv(Environment):
         if not isinstance(action, CodeAction):
             raise ValueError(f"Expected CodeAction, got {type(action)}")
 
-        # Execute the code using PyExecutor
-        result = self._executor.run(action.code)
+        # Execute the code using the executor backend
+        # Pass capture flags to enable screenshot/frame capture
+        result = self._executor.run(
+            action.code,
+            capture_screenshot=action.capture_screenshot,
+            capture_frames=action.capture_frames,
+            capture_interval_ms=action.capture_interval_ms,
+            max_frames=action.max_frames,
+        )
 
         # Update state
         self._state.step_count += 1
         self._state.last_exit_code = result.exit_code
+
+        # Retrieve screenshot and frames captured during execution
+        screenshot = None
+        frames = []
+
+        if action.capture_frames:
+            # Frame capture mode - get all frames
+            frames = self._executor.get_captured_frames()
+            # Use last frame as screenshot for backward compatibility
+            screenshot = self._executor.get_captured_screenshot()
+            if not frames:
+                import logging
+
+                logging.warning(
+                    "Frame capture was requested but no frames were captured. "
+                    "This may occur if UI elements were not rendered or Xvfb is not running."
+                )
+        elif action.capture_screenshot:
+            # Single screenshot mode
+            screenshot = self._executor.get_captured_screenshot()
+            if screenshot is None:
+                import logging
+
+                logging.warning(
+                    "Screenshot capture was requested but no screenshot was captured. "
+                    "This may occur if UI elements were not rendered or Xvfb is not running."
+                )
 
         # Create observation from execution result
         # Include code in metadata for transform reward calculation
@@ -106,7 +177,10 @@ class PythonCodeActEnv(Environment):
             stdout=result.stdout,
             stderr=result.stderr,
             exit_code=result.exit_code,
-            metadata={"last_code": action.code},
+            metadata={"last_code": action.code},  # Add code to metadata for transforms
+            screenshot=screenshot,
+            frames=frames,
+            frame_count=len(frames),
         )
 
         return self._apply_transform(observation)

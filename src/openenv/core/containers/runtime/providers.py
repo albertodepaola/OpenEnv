@@ -287,6 +287,282 @@ class LocalDockerProvider(ContainerProvider):
         return f"{clean_image}-{timestamp}"
 
 
+class SecureLocalDockerProvider(ContainerProvider):
+    """
+    Docker provider with security hardening for executing untrusted code.
+
+    This provider applies defense-in-depth security measures:
+    - Dropped capabilities (--cap-drop=ALL)
+    - No privilege escalation (--security-opt=no-new-privileges)
+    - Resource limits (memory, CPU, PIDs)
+    - Network isolation (--network=none by default)
+    - Non-root user execution (--user=1000:1000)
+    - Read-only filesystem with tmpfs mounts (optional)
+
+    Use this provider when running untrusted/LLM-generated code with the
+    subprocess executor backend.
+
+    Example:
+        >>> provider = SecureLocalDockerProvider(
+        ...     memory_limit="1g",
+        ...     network_mode="none",
+        ...     read_only=True
+        ... )
+        >>> base_url = provider.start_container("coding-env-hardened:latest")
+        >>> # Container running with security hardening
+        >>> provider.stop_container()
+    """
+
+    def __init__(
+        self,
+        *,
+        memory_limit: str = "1g",
+        cpu_limit: float = 2.0,
+        pids_limit: int = 256,
+        network_mode: str = "none",
+        read_only: bool = True,
+        user: str = "1000:1000",
+        tmpfs_mounts: Optional[Dict[str, str]] = None,
+    ):
+        """Initialize the secure Docker provider.
+
+        Args:
+            memory_limit: Memory limit (e.g., "1g", "512m")
+            cpu_limit: CPU limit as fraction of CPUs (e.g., 2.0 = 2 CPUs)
+            pids_limit: Maximum number of processes
+            network_mode: Network mode ("none" for isolation, "bridge" for access)
+            read_only: Make filesystem read-only (requires tmpfs for /tmp)
+            user: User to run as (UID:GID format)
+            tmpfs_mounts: Custom tmpfs mounts (default provides /tmp and /home/coderunner)
+        """
+        self._container_id: Optional[str] = None
+        self._container_name: Optional[str] = None
+
+        # Security configuration
+        self._memory_limit = memory_limit
+        self._cpu_limit = cpu_limit
+        self._pids_limit = pids_limit
+        self._network_mode = network_mode
+        self._read_only = read_only
+        self._user = user
+        self._tmpfs_mounts = tmpfs_mounts or {
+            "/tmp": "rw,noexec,nosuid,size=100m",
+            "/home/coderunner": "rw,noexec,nosuid,size=50m",
+        }
+
+        # Check if Docker is available
+        import subprocess
+
+        try:
+            subprocess.run(
+                ["docker", "version"],
+                check=True,
+                capture_output=True,
+                timeout=5,
+            )
+        except (
+            subprocess.CalledProcessError,
+            FileNotFoundError,
+            subprocess.TimeoutExpired,
+        ):
+            raise RuntimeError(
+                "Docker is not available. Please install Docker Desktop or Docker Engine."
+            )
+
+    def start_container(
+        self,
+        image: str,
+        port: Optional[int] = None,
+        env_vars: Optional[Dict[str, str]] = None,
+        **kwargs: Any,
+    ) -> str:
+        """
+        Start a Docker container with security hardening.
+
+        Args:
+            image: Docker image name
+            port: Port to expose (if None, finds available port)
+            env_vars: Environment variables for the container
+            **kwargs: Additional Docker run options
+
+        Returns:
+            Base URL to connect to the container
+        """
+        import subprocess
+        import time
+
+        # Find available port if not specified
+        if port is None:
+            port = self._find_available_port()
+
+        # Generate container name
+        self._container_name = self._generate_container_name(image)
+
+        # Build docker run command with security hardening
+        cmd = [
+            "docker",
+            "run",
+            "-d",  # Detached
+            "--name",
+            self._container_name,
+            "-p",
+            f"{port}:8000",  # Map port
+            # === SECURITY HARDENING ===
+            # Drop all Linux capabilities
+            "--cap-drop=ALL",
+            # Prevent privilege escalation via setuid binaries
+            "--security-opt=no-new-privileges:true",
+            # Resource limits
+            f"--memory={self._memory_limit}",
+            f"--cpus={self._cpu_limit}",
+            f"--pids-limit={self._pids_limit}",
+            # Network isolation
+            f"--network={self._network_mode}",
+            # Run as non-root user
+            f"--user={self._user}",
+        ]
+
+        # Read-only filesystem with tmpfs for writable areas
+        if self._read_only:
+            cmd.append("--read-only")
+            for mount_path, mount_options in self._tmpfs_mounts.items():
+                cmd.append(f"--tmpfs={mount_path}:{mount_options}")
+
+        # Add environment variables
+        if env_vars:
+            for key, value in env_vars.items():
+                cmd.extend(["-e", f"{key}={value}"])
+
+        # Add image
+        cmd.append(image)
+
+        # Run container
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            self._container_id = result.stdout.strip()
+        except subprocess.CalledProcessError as e:
+            error_msg = (
+                f"Failed to start Docker container with security hardening.\n"
+                f"Command: {' '.join(cmd)}\n"
+                f"Exit code: {e.returncode}\n"
+                f"Stderr: {e.stderr}\n"
+                f"Stdout: {e.stdout}"
+            )
+            raise RuntimeError(error_msg) from e
+
+        # Wait a moment for container to start
+        time.sleep(1)
+
+        base_url = f"http://localhost:{port}"
+        return base_url
+
+    def stop_container(self) -> None:
+        """
+        Stop and remove the Docker container.
+        """
+        if self._container_id is None:
+            return
+
+        import subprocess
+
+        try:
+            # Stop container
+            subprocess.run(
+                ["docker", "stop", self._container_id],
+                capture_output=True,
+                check=True,
+                timeout=10,
+            )
+
+            # Remove container
+            subprocess.run(
+                ["docker", "rm", self._container_id],
+                capture_output=True,
+                check=True,
+                timeout=10,
+            )
+        except subprocess.CalledProcessError:
+            # Container might already be stopped/removed
+            pass
+        finally:
+            self._container_id = None
+            self._container_name = None
+
+    def wait_for_ready(self, base_url: str, timeout_s: float = 30.0) -> None:
+        """
+        Wait for container to be ready by polling /health endpoint.
+
+        Note: With network_mode="none", the health check will fail from outside
+        the container. In that case, use a longer initial sleep instead.
+
+        Args:
+            base_url: Base URL of the container
+            timeout_s: Maximum time to wait
+
+        Raises:
+            TimeoutError: If container doesn't become ready
+        """
+        import time
+        import requests
+
+        # If network is isolated, we can't poll health from outside
+        # Just wait and hope for the best
+        if self._network_mode == "none":
+            time.sleep(3.0)
+            return
+
+        start_time = time.time()
+        health_url = f"{base_url}/health"
+
+        # Bypass proxy for localhost to avoid proxy issues
+        proxies = {"http": None, "https": None}
+
+        while time.time() - start_time < timeout_s:
+            try:
+                response = requests.get(health_url, timeout=2.0, proxies=proxies)
+                if response.status_code == 200:
+                    return
+            except requests.RequestException:
+                pass
+
+            time.sleep(0.5)
+
+        raise TimeoutError(
+            f"Container at {base_url} did not become ready within {timeout_s}s"
+        )
+
+    def _find_available_port(self) -> int:
+        """
+        Find an available port on localhost.
+
+        Returns:
+            An available port number
+        """
+        import socket
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("", 0))
+            s.listen(1)
+            port = s.getsockname()[1]
+        return port
+
+    def _generate_container_name(self, image: str) -> str:
+        """
+        Generate a unique container name based on image name and timestamp.
+
+        Args:
+            image: Docker image name
+
+        Returns:
+            A unique container name
+        """
+        import time
+
+        clean_image = image.split("/")[-1].split(":")[0]
+        timestamp = int(time.time() * 1000)
+        return f"{clean_image}-secure-{timestamp}"
+
+
 class DockerSwarmProvider(ContainerProvider):
     """
     Container provider that uses Docker Swarm services for local concurrency.

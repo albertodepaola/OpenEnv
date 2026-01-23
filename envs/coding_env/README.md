@@ -66,20 +66,142 @@ docker build -t coding-env:latest -f envs/coding_env/server/Dockerfile .
 ## Environment Details
 
 ### Action
-**CodeAction**: Contains a single field
-- `code` (str) - The Python code to execute
+**CodeAction**: Code execution request with optional frame capture
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `code` | str | (required) | Python code to execute |
+| `capture_screenshot` | bool | False | Capture single screenshot after execution |
+| `capture_frames` | bool | False | Capture frames during execution (for animations) |
+| `capture_interval_ms` | int | 500 | Interval between frame captures (2 FPS default) |
+| `max_frames` | int | 100 | Maximum frames to capture |
 
 ### Observation
-**CodeObservation**: Contains the execution results
-- `stdout` (str) - Standard output from code execution
-- `stderr` (str) - Standard error from code execution
-- `exit_code` (int) - Exit code (0 for success, non-zero for errors)
+**CodeObservation**: Execution results with optional visual output
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `stdout` | str | Standard output from code execution |
+| `stderr` | str | Standard error (includes timeout/resource limit messages) |
+| `exit_code` | int | Exit code (see Exit Code Semantics below) |
+| `screenshot` | str \| None | Base64-encoded PNG (last frame if capturing frames) |
+| `frames` | List[str] | List of base64-encoded PNG frames |
+| `frame_count` | int | Number of frames captured |
+
+### Exit Code Semantics
+
+The `exit_code` field indicates how the code execution terminated:
+
+| Exit Code | Meaning |
+|-----------|---------|
+| 0 | Success - code completed normally |
+| 1-127 | Code error (exception, syntax error, etc.) |
+| 124 | Timeout - wall clock time limit exceeded |
+| 137 | OOM killer (128 + SIGKILL) |
+| -9 | SIGKILL - often CPU time limit exceeded |
+| -24 | SIGXCPU - CPU time soft limit exceeded |
+
+**Important for frame capture**: A non-zero exit code (e.g., 124 timeout or -9 SIGKILL) does NOT mean failure for animation capture scenarios. The frames are captured in a background thread during execution, so they are returned even if the process is terminated. Success should be measured by analyzing the captured frames, not by exit code.
 
 ### State
 **CodeState**: Tracks execution state
 - `episode_id` (str) - Unique identifier for the episode
 - `step_count` (int) - Number of steps taken
 - `last_exit_code` (int) - Exit code from the last execution
+
+## Frame Capture for Animations
+
+For animations that run continuously (e.g., `tkinter.mainloop()`), use frame capture mode:
+
+```python
+from envs.coding_env import CodeAction, CodingEnv
+
+coding_env = CodingEnv.from_docker_image("coding-env-subprocess:latest")
+
+# Animation code - runs forever until timeout
+animation_code = '''
+import tkinter as tk
+
+root = tk.Tk()
+canvas = tk.Canvas(root, width=400, height=400)
+canvas.pack()
+
+ball = canvas.create_oval(10, 10, 50, 50, fill="red")
+dx, dy = 5, 3
+
+def animate():
+    canvas.move(ball, dx, dy)
+    x1, y1, x2, y2 = canvas.coords(ball)
+    if x1 <= 0 or x2 >= 400:
+        global dx
+        dx = -dx
+    if y1 <= 0 or y2 >= 400:
+        global dy
+        dy = -dy
+    root.after(16, animate)
+
+animate()
+root.mainloop()  # Runs forever - will be terminated by timeout
+'''
+
+result = coding_env.step(CodeAction(
+    code=animation_code,
+    capture_frames=True,
+    capture_interval_ms=500,  # 2 FPS
+    max_frames=10,
+))
+
+# Exit code will be 124 (timeout) - this is expected!
+print(f"Exit code: {result.observation.exit_code}")  # 124
+print(f"Frames captured: {result.observation.frame_count}")  # 10
+
+# Success is measured by frame content, not exit code
+import base64
+for i, frame_b64 in enumerate(result.observation.frames):
+    frame_bytes = base64.b64decode(frame_b64)
+    with open(f"frame_{i:02d}.png", "wb") as f:
+        f.write(frame_bytes)
+```
+
+### Data Flow for Frame Capture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        CodeAction                                │
+│  code="...", capture_frames=True, capture_interval_ms=500       │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    Subprocess Executor                           │
+│  ┌──────────────┐    ┌─────────────────────────────────────┐   │
+│  │ User Code    │    │ Background Capture Thread           │   │
+│  │ (subprocess) │    │ - Captures X11 display every 500ms  │   │
+│  │              │    │ - Stores frames in memory            │   │
+│  │ mainloop()   │◄──►│ - Runs independently of user code   │   │
+│  │ ...          │    │                                      │   │
+│  │ [SIGKILL]    │    │ [Stops when subprocess terminates]  │   │
+│  └──────────────┘    └─────────────────────────────────────┘   │
+│         │                           │                           │
+│         ▼                           ▼                           │
+│    exit_code=-9              frames=[f1, f2, ..., fn]          │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                      CodeObservation                             │
+│  stdout="", stderr="[Timeout]...", exit_code=124,               │
+│  frames=["base64...", ...], frame_count=10, screenshot="..."    │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                     Reward Calculation                           │
+│  - Analyze captured frames (not exit code)                      │
+│  - Compare to expected visual output                            │
+│  - Return reward based on image similarity/correctness          │
+└─────────────────────────────────────────────────────────────────┘
+```
 
 ## Advanced Usage
 

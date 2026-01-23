@@ -35,7 +35,7 @@ def main():
 
         client = CodingEnv.from_docker_image("coding-env:latest")
 
-        print("✓ Client created and container started!\n")
+        print("Client created and container started!\n")
 
         # Now use it like any other client
         print("Testing the environment:")
@@ -65,10 +65,10 @@ def main():
         for i, code in enumerate(code_samples, 1):
             result = client.step(CodeAction(code=code))
             print(f"   {i}. Code: {code.replace(chr(10), '\\n')[:50]}...")
-            print(f"      → stdout: {result.observation.stdout.strip()}")
-            print(f"      → exit_code: {result.observation.exit_code}")
+            print(f"      -> stdout: {result.observation.stdout.strip()}")
+            print(f"      -> exit_code: {result.observation.exit_code}")
             if result.observation.stderr:
-                print(f"      → stderr: {result.observation.stderr}")
+                print(f"      -> stderr: {result.observation.stderr}")
 
         # Test error scenarios
         print("\n3. Test error scenarios:")
@@ -83,13 +83,13 @@ def main():
             result = client.step(CodeAction(code=code))
             print(f"   {i}. {description}")
             print(f"      Code: {code.replace(chr(10), '\\n')[:40]}...")
-            print(f"      → exit_code: {result.observation.exit_code}")
+            print(f"      -> exit_code: {result.observation.exit_code}")
             if result.observation.stderr:
                 # Truncate long error messages
                 error_msg = result.observation.stderr[:100]
                 if len(result.observation.stderr) > 100:
                     error_msg += "..."
-                print(f"      → stderr: {error_msg}")
+                print(f"      -> stderr: {error_msg}")
 
         # Check final state
         print("\n4. Check final state:")
@@ -99,22 +99,22 @@ def main():
         print(f"   last_exit_code: {state.last_exit_code}")
 
         print("\n" + "-" * 60)
-        print("\n✓ All operations successful!")
+        print("\nAll operations successful!")
         print()
 
         print("Cleaning up...")
         client.close()
-        print("✓ Container stopped and removed")
+        print("Container stopped and removed")
         print()
 
         print("=" * 60)
-        print("Test completed successfully! 🎉")
+        print("Test completed successfully!")
         print("=" * 60)
 
         return True
 
     except Exception as e:
-        print(f"\n❌ Test failed: {e}")
+        print(f"\nTest failed: {e}")
         import traceback
         traceback.print_exc()
         return False
