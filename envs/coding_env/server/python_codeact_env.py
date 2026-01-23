@@ -19,6 +19,7 @@ from ..models import CodeAction, CodeObservation, CodeState
 from .executor_backend import ExecutorBackend
 from .python_executor import PyExecutor
 from .restricted_python_executor import RestrictedPythonExecutor
+from .subprocess_executor import SubprocessExecutor
 from .transforms import create_safe_coding_transform
 
 
@@ -37,6 +38,8 @@ class PythonCodeActEnv(Environment):
         executor_backend: Backend to use for code execution. Options:
                          - "smolagents" (default): Use smolagents LocalPythonExecutor
                          - "restrictedpython": Use RestrictedPython for full Python semantics
+                         - "subprocess": Use subprocess isolation with resource limits
+                             (requires hardened container for security)
 
     Example:
         >>> env = PythonCodeActEnv()
@@ -65,7 +68,11 @@ class PythonCodeActEnv(Environment):
         """Create the appropriate executor backend based on configuration.
 
         Args:
-            backend: Name of the backend ("smolagents" or "restrictedpython")
+            backend: Name of the backend. Options:
+                - "smolagents": AST-based executor from smolagents library
+                - "restrictedpython": RestrictedPython-based executor
+                - "subprocess": Subprocess isolation with resource limits
+                    (requires hardened container for security)
 
         Returns:
             ExecutorBackend instance
@@ -77,10 +84,14 @@ class PythonCodeActEnv(Environment):
             return PyExecutor(additional_imports=self._additional_imports)
         elif backend == "restrictedpython":
             return RestrictedPythonExecutor(additional_imports=self._additional_imports)
+        elif backend == "subprocess":
+            # Subprocess executor with resource limits
+            # Security relies on container hardening (--cap-drop=ALL, etc.)
+            return SubprocessExecutor()
         else:
             raise ValueError(
                 f"Unknown executor backend: {backend}. "
-                f"Valid options: 'smolagents', 'restrictedpython'"
+                f"Valid options: 'smolagents', 'restrictedpython', 'subprocess'"
             )
 
     def reset(self) -> Observation:
@@ -118,7 +129,7 @@ class PythonCodeActEnv(Environment):
             action: CodeAction containing the code to execute
 
         Returns:
-            CodeObservation with execution results (stdout, stderr, exit_code, screenshot)
+            CodeObservation with execution results (stdout, stderr, exit_code, screenshot, frames)
 
         Raises:
             ValueError: If action is not a CodeAction instance
@@ -126,19 +137,38 @@ class PythonCodeActEnv(Environment):
         if not isinstance(action, CodeAction):
             raise ValueError(f"Expected CodeAction, got {type(action)}")
 
-        # Execute the code using PyExecutor
-        # Pass the capture_screenshot flag to enable in-execution screenshot capture
+        # Execute the code using the executor backend
+        # Pass capture flags to enable screenshot/frame capture
         result = self._executor.run(
-            action.code, capture_screenshot=action.capture_screenshot
+            action.code,
+            capture_screenshot=action.capture_screenshot,
+            capture_frames=action.capture_frames,
+            capture_interval_ms=action.capture_interval_ms,
+            max_frames=action.max_frames,
         )
 
         # Update state
         self._state.step_count += 1
         self._state.last_exit_code = result.exit_code
 
-        # Retrieve screenshot captured during execution (if any)
+        # Retrieve screenshot and frames captured during execution
         screenshot = None
-        if action.capture_screenshot:
+        frames = []
+
+        if action.capture_frames:
+            # Frame capture mode - get all frames
+            frames = self._executor.get_captured_frames()
+            # Use last frame as screenshot for backward compatibility
+            screenshot = self._executor.get_captured_screenshot()
+            if not frames:
+                import logging
+
+                logging.warning(
+                    "Frame capture was requested but no frames were captured. "
+                    "This may occur if UI elements were not rendered or Xvfb is not running."
+                )
+        elif action.capture_screenshot:
+            # Single screenshot mode
             screenshot = self._executor.get_captured_screenshot()
             if screenshot is None:
                 import logging
@@ -155,6 +185,8 @@ class PythonCodeActEnv(Environment):
             exit_code=result.exit_code,
             metadata={"last_code": action.code},  # Add code to metadata for transforms
             screenshot=screenshot,
+            frames=frames,
+            frame_count=len(frames),
         )
 
         return self._apply_transform(observation)

@@ -1,0 +1,113 @@
+# Dockerfile for Subprocess Executor (Hardened Coding Environment)
+# Build from repo root:
+#   docker build -t coding-env-subprocess:latest -f envs/coding_env/server/Dockerfile.subprocess .
+#
+# This image uses the SubprocessExecutor backend instead of the default smolagents executor.
+# It provides full Python compatibility without AST transformation.
+#
+# Security Hardening Applied:
+#   - Multi-stage build for minimal image size
+#   - Non-root user (coderunner:1000)
+#   - Minimal packages (no git, no curl)
+#   - pip removed after installation
+#
+# Runtime Hardening Required (see docker-compose.hardened.yml or run with flags):
+#   --cap-drop=ALL
+#   --security-opt=no-new-privileges:true
+#   --read-only --tmpfs=/tmp:rw,noexec,nosuid,size=100m
+#   --network=none (or --network=internal)
+#   --memory=1g --cpus=2 --pids-limit=256
+
+# ===== BUILD STAGE =====
+FROM python:3.11-slim AS builder
+
+# Install build dependencies for tkinter
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3-tk \
+    tk-dev \
+    tcl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy and install packages
+WORKDIR /build
+COPY pyproject.toml ./
+COPY src/ ./src/
+COPY envs/coding_env/ ./envs/coding_env/
+
+# Install openenv-core and coding_env to get dependencies
+RUN pip install --no-cache-dir . && \
+    pip install --no-cache-dir ./envs/coding_env/
+
+
+# ===== PRODUCTION STAGE =====
+FROM python:3.11-slim
+
+# Install only runtime dependencies (NO git, NO curl)
+# These are the minimum required for:
+#   - xvfb: virtual framebuffer for headless UI
+#   - x11-utils: X11 utilities
+#   - imagemagick: screenshot capture
+#   - libx11/libxext/libxrender: X11 runtime libs
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3-tk \
+    xvfb \
+    x11-utils \
+    imagemagick \
+    libx11-6 \
+    libxext6 \
+    libxrender1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /var/cache/apt/*
+
+# Create non-root user BEFORE copying files
+# Using fixed UID/GID 1000 for predictable --user flag in docker run
+RUN groupadd -r coderunner -g 1000 && \
+    useradd -r -g coderunner -u 1000 -d /home/coderunner -s /sbin/nologin coderunner && \
+    mkdir -p /home/coderunner && \
+    chown -R coderunner:coderunner /home/coderunner
+
+WORKDIR /app
+
+# Copy installed packages from builder
+COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+
+# Copy application code (owned by coderunner)
+COPY --chown=coderunner:coderunner pyproject.toml ./
+COPY --chown=coderunner:coderunner src/ ./src/
+COPY --chown=coderunner:coderunner envs/coding_env/ ./envs/coding_env/
+
+# Copy entrypoint script
+COPY --chown=coderunner:coderunner envs/coding_env/server/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+# Create writable directories for runtime
+# These will be tmpfs mounts when running with --read-only
+RUN mkdir -p /tmp/code /tmp/screenshots && \
+    chown -R coderunner:coderunner /tmp/code /tmp/screenshots
+
+# Remove pip to prevent further package installation
+# This is a security measure - if code execution is compromised,
+# it cannot install additional packages
+RUN pip uninstall -y pip setuptools wheel 2>/dev/null || true
+
+# Environment variables
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV DISPLAY=:99
+ENV HOME=/home/coderunner
+ENV EXECUTOR_BACKEND=subprocess
+
+# Switch to non-root user
+USER coderunner
+
+# Expose port
+EXPOSE 8000
+
+# Health check using Python (no curl available)
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
+
+# Run the server with Xvfb
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["uvicorn", "coding_env.server.app:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -34,6 +34,9 @@ class CodingEnv(EnvClient[CodeAction, CodeObservation, CodeState]):
         return {
             "code": action.code,
             "capture_screenshot": action.capture_screenshot,
+            "capture_frames": action.capture_frames,
+            "capture_interval_ms": action.capture_interval_ms,
+            "max_frames": action.max_frames,
         }
 
     def _parse_result(self, payload: dict) -> StepResult[CodeObservation]:

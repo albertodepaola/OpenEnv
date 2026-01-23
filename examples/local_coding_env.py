@@ -160,7 +160,7 @@ import numpy as np
 x = np.linspace(0, 2 * np.pi, 100)
 y = np.sin(x)
 
-plt.figure(figsize=(8, 6))
+fig = plt.figure(figsize=(8, 6))
 plt.plot(x, y, 'b-', linewidth=2, label='sin(x)')
 plt.plot(x, np.cos(x), 'r--', linewidth=2, label='cos(x)')
 plt.title('Sine and Cosine Waves', fontsize=16)
@@ -169,7 +169,17 @@ plt.ylabel('y')
 plt.legend()
 plt.grid(True, alpha=0.3)
 
-print('Plot created successfully')
+# CRITICAL: Actually display the figure to the X11 display
+# show(block=False) opens the window without blocking
+# pause() gives time for the window to render
+plt.show(block=False)
+plt.pause(0.5)
+
+# Force the figure canvas to draw
+fig.canvas.draw()
+fig.canvas.flush_events()
+
+print('Plot created and displayed successfully')
 """
 
         result = client.step(CodeAction(code=matplotlib_code, capture_screenshot=True))

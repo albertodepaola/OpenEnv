@@ -294,7 +294,14 @@ class PyExecutor(ExecutorBackend):
         self._captured_screenshot = None
 
     def run(
-        self, code: str, capture_screenshot: bool = False, render_timeout: float = 0.5
+        self,
+        code: str,
+        *,
+        capture_screenshot: bool = False,
+        capture_frames: bool = False,
+        capture_interval_ms: int = 500,
+        max_frames: int = 100,
+        render_timeout: float = 0.5,
     ) -> CodeExecResult:
         """Execute Python code and return a CodeExecResult.
 
@@ -306,6 +313,9 @@ class PyExecutor(ExecutorBackend):
         Args:
             code: Python code to execute
             capture_screenshot: If True, inject code to capture screenshot during execution
+            capture_frames: Not supported by this backend (ignored)
+            capture_interval_ms: Not supported by this backend (ignored)
+            max_frames: Not supported by this backend (ignored)
             render_timeout: Time in seconds to wait for UI rendering before screenshot (default 0.5s)
 
         Returns:
